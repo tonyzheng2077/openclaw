@@ -671,8 +671,19 @@ export const agentHandlers: GatewayRequestHandlers = {
 
     const resolvedThreadId = explicitThreadId ?? deliveryPlan.resolvedThreadId;
 
-    dispatchAgentRunFromGateway({
-      ingressOpts: {
+    if (deliver && resolvedTo && isDeliverableMessageChannel(resolvedChannel)) {
+      registerAgentRunContext(idem, {
+        delivery: {
+          channel: resolvedChannel,
+          to: resolvedTo,
+          accountId: resolvedAccountId,
+          threadId: resolvedThreadId != null ? String(resolvedThreadId) : undefined,
+        },
+      });
+    }
+
+    void agentCommand(
+      {
         message,
         images,
         to: resolvedTo,

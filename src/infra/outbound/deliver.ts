@@ -35,6 +35,7 @@ import { sendMessageSignal } from "../../signal/send.js";
 import type { sendMessageSlack } from "../../slack/send.js";
 import type { sendMessageTelegram } from "../../telegram/send.js";
 import type { sendMessageWhatsApp } from "../../web/outbound.js";
+import { markAgentRunUserVisible } from "../agent-events.js";
 import { throwIfAborted } from "./abort.js";
 import { ackDelivery, enqueueDelivery, failDelivery } from "./delivery-queue.js";
 import type { OutboundIdentity } from "./identity.js";
@@ -248,6 +249,7 @@ type DeliverOutboundPayloadsCoreParams = {
     groupId?: string;
   };
   silent?: boolean;
+  runId?: string;
 };
 
 type DeliverOutboundPayloadsParams = DeliverOutboundPayloadsCoreParams & {
@@ -689,6 +691,31 @@ async function deliverOutboundPayloadsCore(
   }
   for (const payload of normalizedPayloads) {
     let payloadSummary = buildPayloadSummary(payload);
+    const emitMessageSent = (success: boolean, error?: string) => {
+      if (!hookRunner?.hasHooks("message_sent")) {
+        return;
+      }
+      void hookRunner
+        .runMessageSent(
+          {
+            to,
+            content: payloadSummary.text,
+            success,
+            ...(error ? { error } : {}),
+          },
+          {
+            channelId: channel,
+            accountId: accountId ?? undefined,
+          },
+        )
+        .catch(() => {});
+    };
+    const markVisibleIfRunScoped = () => {
+      if (params.runId) {
+        markAgentRunUserVisible(params.runId);
+      }
+    };
+
     try {
       throwIfAborted(abortSignal);
 
@@ -716,11 +743,8 @@ async function deliverOutboundPayloadsCore(
       if (handler.sendPayload && effectivePayload.channelData) {
         const delivery = await handler.sendPayload(effectivePayload, sendOverrides);
         results.push(delivery);
-        emitMessageSent({
-          success: true,
-          content: payloadSummary.text,
-          messageId: delivery.messageId,
-        });
+        markVisibleIfRunScoped();
+        emitMessageSent(true);
         continue;
       }
       if (payloadSummary.mediaUrls.length === 0) {
@@ -730,12 +754,11 @@ async function deliverOutboundPayloadsCore(
         } else {
           await sendTextChunks(payloadSummary.text, sendOverrides);
         }
-        const messageId = results.at(-1)?.messageId;
-        emitMessageSent({
-          success: results.length > beforeCount,
-          content: payloadSummary.text,
-          messageId,
-        });
+        const success = results.length > beforeCount;
+        if (success) {
+          markVisibleIfRunScoped();
+        }
+        emitMessageSent(success);
         continue;
       }
 
@@ -756,12 +779,11 @@ async function deliverOutboundPayloadsCore(
         }
         const beforeCount = results.length;
         await sendTextChunks(fallbackText, sendOverrides);
-        const messageId = results.at(-1)?.messageId;
-        emitMessageSent({
-          success: results.length > beforeCount,
-          content: payloadSummary.text,
-          messageId,
-        });
+        const success = results.length > beforeCount;
+        if (success) {
+          markVisibleIfRunScoped();
+        }
+        emitMessageSent(success);
         continue;
       }
 
@@ -781,17 +803,10 @@ async function deliverOutboundPayloadsCore(
           lastMessageId = delivery.messageId;
         }
       }
-      emitMessageSent({
-        success: true,
-        content: payloadSummary.text,
-        messageId: lastMessageId,
-      });
+      markVisibleIfRunScoped();
+      emitMessageSent(true);
     } catch (err) {
-      emitMessageSent({
-        success: false,
-        content: payloadSummary.text,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      emitMessageSent(false, err instanceof Error ? err.message : String(err));
       if (!params.bestEffort) {
         throw err;
       }

@@ -114,6 +114,7 @@ import {
   mergeGatewayTailscaleConfig,
 } from "./startup-auth.js";
 import { maybeSeedControlUiAllowedOriginsAtStartup } from "./startup-control-ui-origins.js";
+import { startGatewayTurnWatchdog } from "./turn-watchdog.js";
 
 export { __resetModelCatalogCacheForTest } from "./server-model-catalog.js";
 
@@ -751,6 +752,13 @@ export async function startGatewayServer(
         checkIntervalMs: (healthCheckMinutes ?? 5) * 60_000,
       });
 
+  let turnWatchdog = minimalTestGateway
+    ? {
+        stop: () => {},
+        updateConfig: () => {},
+      }
+    : startGatewayTurnWatchdog(cfgAtStart);
+
   if (!minimalTestGateway) {
     void cron.start().catch((err) => logCron.error(`failed to start: ${String(err)}`));
   }
@@ -945,6 +953,7 @@ export async function startGatewayServer(
           getState: () => ({
             hooksConfig,
             heartbeatRunner,
+            turnWatchdog,
             cronState,
             browserControl,
             channelHealthMonitor,
@@ -952,6 +961,7 @@ export async function startGatewayServer(
           setState: (nextState) => {
             hooksConfig = nextState.hooksConfig;
             heartbeatRunner = nextState.heartbeatRunner;
+            turnWatchdog = nextState.turnWatchdog;
             cronState = nextState.cronState;
             cron = cronState.cron;
             cronStorePath = cronState.storePath;
@@ -1012,6 +1022,7 @@ export async function startGatewayServer(
     cron,
     heartbeatRunner,
     updateCheckStop: stopGatewayUpdateCheck,
+    turnWatchdog,
     nodePresenceTimers,
     broadcast,
     tickInterval,

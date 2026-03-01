@@ -665,6 +665,13 @@ export const OpenClawSchema = z
           .strict()
           .optional(),
         channelHealthCheckMinutes: z.number().int().min(0).optional(),
+        turnWatchdog: z
+          .object({
+            enabled: z.boolean().optional(),
+            intervalMs: z.number().int().positive().optional(),
+          })
+          .strict()
+          .optional(),
         tailscale: z
           .object({
             mode: z.union([z.literal("off"), z.literal("serve"), z.literal("funnel")]).optional(),
