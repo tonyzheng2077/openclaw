@@ -83,6 +83,7 @@ import {
   refreshGatewayHealthSnapshot,
 } from "./server/health-state.js";
 import { loadGatewayTlsRuntime } from "./server/tls.js";
+import { startGatewayTurnWatchdog } from "./turn-watchdog.js";
 
 export { __resetModelCatalogCacheForTest } from "./server-model-catalog.js";
 
@@ -502,6 +503,13 @@ export async function startGatewayServer(
       }
     : startHeartbeatRunner({ cfg: cfgAtStart });
 
+  let turnWatchdog = minimalTestGateway
+    ? {
+        stop: () => {},
+        updateConfig: () => {},
+      }
+    : startGatewayTurnWatchdog(cfgAtStart);
+
   if (!minimalTestGateway) {
     void cron.start().catch((err) => logCron.error(`failed to start: ${String(err)}`));
   }
@@ -644,12 +652,14 @@ export async function startGatewayServer(
           getState: () => ({
             hooksConfig,
             heartbeatRunner,
+            turnWatchdog,
             cronState,
             browserControl,
           }),
           setState: (nextState) => {
             hooksConfig = nextState.hooksConfig;
             heartbeatRunner = nextState.heartbeatRunner;
+            turnWatchdog = nextState.turnWatchdog;
             cronState = nextState.cronState;
             cron = cronState.cron;
             cronStorePath = cronState.storePath;
@@ -687,6 +697,7 @@ export async function startGatewayServer(
     pluginServices,
     cron,
     heartbeatRunner,
+    turnWatchdog,
     nodePresenceTimers,
     broadcast,
     tickInterval,

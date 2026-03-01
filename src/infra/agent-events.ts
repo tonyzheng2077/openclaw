@@ -15,6 +15,14 @@ export type AgentRunContext = {
   sessionKey?: string;
   verboseLevel?: VerboseLevel;
   isHeartbeat?: boolean;
+  delivery?: {
+    channel: string;
+    to: string;
+    accountId?: string;
+    threadId?: string;
+  };
+  firstUserVisibleAt?: number;
+  lastUserVisibleAt?: number;
 };
 
 // Keep per-run counters so streams stay strictly monotonic per runId.
@@ -40,6 +48,18 @@ export function registerAgentRunContext(runId: string, context: AgentRunContext)
   if (context.isHeartbeat !== undefined && existing.isHeartbeat !== context.isHeartbeat) {
     existing.isHeartbeat = context.isHeartbeat;
   }
+  if (context.delivery) {
+    existing.delivery = {
+      ...existing.delivery,
+      ...context.delivery,
+    };
+  }
+  if (typeof context.firstUserVisibleAt === "number") {
+    existing.firstUserVisibleAt = context.firstUserVisibleAt;
+  }
+  if (typeof context.lastUserVisibleAt === "number") {
+    existing.lastUserVisibleAt = context.lastUserVisibleAt;
+  }
 }
 
 export function getAgentRunContext(runId: string) {
@@ -48,6 +68,21 @@ export function getAgentRunContext(runId: string) {
 
 export function clearAgentRunContext(runId: string) {
   runContextById.delete(runId);
+}
+
+export function markAgentRunUserVisible(runId: string, at = Date.now()) {
+  if (!runId) {
+    return;
+  }
+  const existing = runContextById.get(runId);
+  if (!existing) {
+    runContextById.set(runId, { firstUserVisibleAt: at, lastUserVisibleAt: at });
+    return;
+  }
+  if (typeof existing.firstUserVisibleAt !== "number") {
+    existing.firstUserVisibleAt = at;
+  }
+  existing.lastUserVisibleAt = at;
 }
 
 export function resetAgentRunContextForTest() {

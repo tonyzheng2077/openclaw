@@ -432,6 +432,13 @@ export const OpenClawSchema = z
           })
           .strict()
           .optional(),
+        turnWatchdog: z
+          .object({
+            enabled: z.boolean().optional(),
+            intervalMs: z.number().int().positive().optional(),
+          })
+          .strict()
+          .optional(),
         tailscale: z
           .object({
             mode: z.union([z.literal("off"), z.literal("serve"), z.literal("funnel")]).optional(),

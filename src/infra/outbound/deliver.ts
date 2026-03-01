@@ -26,6 +26,7 @@ import { getAgentScopedMediaLocalRoots } from "../../media/local-roots.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { markdownToSignalTextChunks, type SignalTextStyleRange } from "../../signal/format.js";
 import { sendMessageSignal } from "../../signal/send.js";
+import { markAgentRunUserVisible } from "../agent-events.js";
 import { throwIfAborted } from "./abort.js";
 import { ackDelivery, enqueueDelivery, failDelivery } from "./delivery-queue.js";
 import { normalizeReplyPayloadsForDelivery } from "./payloads.js";
@@ -219,6 +220,7 @@ type DeliverOutboundPayloadsCoreParams = {
     mediaUrls?: string[];
   };
   silent?: boolean;
+  runId?: string;
 };
 
 type DeliverOutboundPayloadsParams = DeliverOutboundPayloadsCoreParams & {
@@ -469,6 +471,11 @@ async function deliverOutboundPayloadsCore(
         )
         .catch(() => {});
     };
+    const markVisibleIfRunScoped = () => {
+      if (params.runId) {
+        markAgentRunUserVisible(params.runId);
+      }
+    };
     try {
       throwIfAborted(abortSignal);
 
@@ -502,6 +509,7 @@ async function deliverOutboundPayloadsCore(
       params.onPayload?.(payloadSummary);
       if (handler.sendPayload && effectivePayload.channelData) {
         results.push(await handler.sendPayload(effectivePayload));
+        markVisibleIfRunScoped();
         emitMessageSent(true);
         continue;
       }
@@ -511,6 +519,7 @@ async function deliverOutboundPayloadsCore(
         } else {
           await sendTextChunks(payloadSummary.text);
         }
+        markVisibleIfRunScoped();
         emitMessageSent(true);
         continue;
       }
@@ -526,6 +535,7 @@ async function deliverOutboundPayloadsCore(
           results.push(await handler.sendMedia(caption, url));
         }
       }
+      markVisibleIfRunScoped();
       emitMessageSent(true);
     } catch (err) {
       emitMessageSent(false, err instanceof Error ? err.message : String(err));
