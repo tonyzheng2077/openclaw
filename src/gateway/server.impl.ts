@@ -48,6 +48,7 @@ import { getGlobalHookRunner, runGlobalGatewayStopSafely } from "../plugins/hook
 import { createEmptyPluginRegistry } from "../plugins/registry.js";
 import { createPluginRuntime } from "../plugins/runtime/index.js";
 import type { PluginServicesHandle } from "../plugins/services.js";
+import { ProactivityService } from "../proactivity/service.js";
 import { getTotalQueueSize } from "../process/command-queue.js";
 import type { RuntimeEnv } from "../runtime.js";
 import type { CommandSecretAssignment } from "../secrets/command-config.js";
@@ -763,6 +764,18 @@ export async function startGatewayServer(
     void cron.start().catch((err) => logCron.error(`failed to start: ${String(err)}`));
   }
 
+  const proactivityService = minimalTestGateway
+    ? null
+    : new ProactivityService({
+        cfg: cfgAtStart,
+      });
+
+  if (proactivityService) {
+    void proactivityService.start().catch((err) => {
+      log.error(`proactivity failed to start: ${String(err)}`);
+    });
+  }
+
   // Recover pending outbound deliveries from previous crash/restart.
   if (!minimalTestGateway) {
     void (async () => {
@@ -1059,6 +1072,7 @@ export async function startGatewayServer(
       authRateLimiter?.dispose();
       browserAuthRateLimiter.dispose();
       channelHealthMonitor?.stop();
+      proactivityService?.stop();
       clearSecretsRuntimeSnapshot();
       await close(opts);
     },

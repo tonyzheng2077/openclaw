@@ -508,6 +508,72 @@ export const OpenClawSchema = z
         }
       })
       .optional(),
+    proactivity: z
+      .object({
+        enabled: z.boolean().optional(),
+        stateRoot: z.string().optional(),
+        assetsRoot: z.string().optional(),
+        owner: z.string().optional(),
+        report: z
+          .object({
+            mode: z.union([z.literal("context"), z.literal("ops")]).optional(),
+            channel: z.string().optional(),
+            opsChannelId: z.string().optional(),
+          })
+          .strict()
+          .optional(),
+        sla: z
+          .object({
+            defaultHours: z.number().positive().optional(),
+          })
+          .strict()
+          .optional(),
+        reminder: z
+          .object({
+            atRiskThresholdHours: z.number().positive().optional(),
+            blockedThresholdHours: z.number().positive().optional(),
+          })
+          .strict()
+          .optional(),
+        heartbeat: z
+          .object({
+            intervalMinutes: z.number().int().positive().optional(),
+            quietMode: z.boolean().optional(),
+            degradedModeWarnEveryHours: z.number().positive().optional(),
+          })
+          .strict()
+          .optional(),
+        consolidation: z
+          .object({
+            localTime: z.string().optional(),
+            quietMode: z.boolean().optional(),
+          })
+          .strict()
+          .optional(),
+        rollout: z
+          .object({
+            phase: z
+              .union([z.literal("shadow"), z.literal("warn_critical"), z.literal("full")])
+              .optional(),
+          })
+          .strict()
+          .optional(),
+        groupChat: z
+          .object({
+            redaction: z.boolean().optional(),
+          })
+          .strict()
+          .optional(),
+        queue: z
+          .object({
+            retryEveryMinutes: z.number().int().positive().optional(),
+            maxAttempts: z.number().int().positive().optional(),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .optional(),
     hooks: z
       .object({
         enabled: z.boolean().optional(),
