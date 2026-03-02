@@ -24,6 +24,8 @@ type Commitment = {
   project?: string;
   last_reminder_at?: string;
   reminder_count: number;
+  closed_at?: string;
+  close_reason?: string;
 };
 
 type QueueItem = {
@@ -328,7 +330,21 @@ export class ProactivityService {
     if (!existing) {
       return false;
     }
-    const next = { ...existing, status, updated_at: iso(this.now()) };
+    const nowIso = iso(this.now());
+    const isClosing = status === "done" || status === "cancelled";
+    const next = {
+      ...existing,
+      status,
+      updated_at: nowIso,
+      ...(isClosing
+        ? {
+            closed_at: nowIso,
+            close_reason:
+              note ??
+              (status === "done" ? "closed" : status === "cancelled" ? "cancelled" : "closed"),
+          }
+        : {}),
+    };
     await appendJsonl(this.ledgerFile, next);
     await appendJsonl(this.eventsFile, {
       ts: iso(this.now()),
