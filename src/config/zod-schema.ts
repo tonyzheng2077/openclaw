@@ -533,6 +533,13 @@ export const OpenClawSchema = z
             atRiskThresholdHours: z.number().positive().optional(),
             blockedThresholdHours: z.number().positive().optional(),
             engineEnabled: z.boolean().optional(),
+            nextCheck: z
+              .object({
+                maxIntervalHours: z.number().positive().optional(),
+                offsetMinutes: z.number().int().nonnegative().optional(),
+              })
+              .strict()
+              .optional(),
           })
           .strict()
           .optional(),

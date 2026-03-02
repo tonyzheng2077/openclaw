@@ -69,6 +69,8 @@ type ProactivityResolved = {
   retryEveryMs: number;
   maxAttempts: number;
   degradedWarnEveryHours: number;
+  nextCheckMaxIntervalHours: number;
+  nextCheckOffsetMinutes: number;
 };
 
 export type ProactivityServiceDeps = {
@@ -145,6 +147,14 @@ function resolveConfig(cfg: OpenClawConfig): ProactivityResolved {
     degradedWarnEveryHours: Math.max(
       1,
       Math.floor(ensure(p?.heartbeat?.degradedModeWarnEveryHours, 6)),
+    ),
+    nextCheckMaxIntervalHours: Math.max(
+      1,
+      Math.floor(ensure(p?.reminder?.nextCheck?.maxIntervalHours, 48)),
+    ),
+    nextCheckOffsetMinutes: Math.max(
+      0,
+      Math.floor(ensure(p?.reminder?.nextCheck?.offsetMinutes, 1)),
     ),
   };
 }
@@ -432,13 +442,18 @@ export class ProactivityService {
         text: `${c.id} ${kind}: ${c.text}`,
       });
       const reminderCount = (c.reminder_count ?? 0) + 1;
-      const backoffHours = Math.min(48, Math.max(1, 2 ** Math.min(8, reminderCount - 1)));
+      const maxIntervalHours = Math.max(1, Math.floor(this.cfg.nextCheckMaxIntervalHours ?? 48));
+      // Linear backoff: +1h each reminder occurrence, capped.
+      const backoffHours = Math.min(maxIntervalHours, Math.max(1, reminderCount));
+      const offsetMinutes = Math.max(0, Math.floor(this.cfg.nextCheckOffsetMinutes ?? 1));
       const updated: Commitment = {
         ...c,
         updated_at: iso(now),
         last_reminder_at: iso(now),
         reminder_count: reminderCount,
-        next_check_at: iso(new Date(now.getTime() + backoffHours * 3600000)),
+        next_check_at: iso(
+          new Date(now.getTime() + backoffHours * 3600000 + offsetMinutes * 60_000),
+        ),
       };
       await appendJsonl(this.ledgerFile, updated);
       await appendJsonl(this.eventsFile, {

@@ -17,6 +17,10 @@ export type ProactivityConfig = {
     atRiskThresholdHours?: number;
     blockedThresholdHours?: number;
     engineEnabled?: boolean;
+    nextCheck?: {
+      maxIntervalHours?: number;
+      offsetMinutes?: number;
+    };
   };
   heartbeat?: {
     intervalMinutes?: number;
