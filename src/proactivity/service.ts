@@ -103,11 +103,19 @@ function resolveConfig(cfg: OpenClawConfig): ProactivityResolved {
     stateRoot: p?.stateRoot?.trim() || path.join(home, ".openclaw", "state", "proactivity"),
     assetsRoot: p?.assetsRoot?.trim() || path.join(home, ".openclaw", "workspace", "memory"),
     reportMode: p?.report?.mode === "context" ? "context" : "ops",
-    reportChannel:
-      p?.report?.opsChannelId?.trim() || p?.report?.channel?.trim() || "1477815403865571349",
-    slaDefaultHours: Math.max(1, Math.floor(ensure(p?.sla?.defaultHours, 24))),
-    atRiskThresholdHours: Math.max(1, Math.floor(ensure(p?.reminder?.atRiskThresholdHours, 4))),
-    blockedThresholdHours: Math.max(1, Math.floor(ensure(p?.reminder?.blockedThresholdHours, 12))),
+    reportChannel: (() => {
+      const raw =
+        p?.report?.opsChannelId?.trim() || p?.report?.channel?.trim() || "1477815403865571349";
+      // Plugin SDK requires explicit routing for Discord: "channel:<id>" or "user:<id>".
+      // Our ops channel is always a channel.
+      if (/^\d+$/.test(raw)) {
+        return `channel:${raw}`;
+      }
+      return raw;
+    })(),
+    slaDefaultHours: Math.max(0.1, Number(ensure(p?.sla?.defaultHours, 24))),
+    atRiskThresholdHours: Math.max(0.0, Number(ensure(p?.reminder?.atRiskThresholdHours, 4))),
+    blockedThresholdHours: Math.max(0.0, Number(ensure(p?.reminder?.blockedThresholdHours, 12))),
     heartbeatIntervalMs: Math.max(
       60_000,
       Math.floor(ensure(p?.heartbeat?.intervalMinutes, 30) * 60_000),
