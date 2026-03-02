@@ -48,6 +48,7 @@ import { getGlobalHookRunner, runGlobalGatewayStopSafely } from "../plugins/hook
 import { createEmptyPluginRegistry } from "../plugins/registry.js";
 import { createPluginRuntime } from "../plugins/runtime/index.js";
 import type { PluginServicesHandle } from "../plugins/services.js";
+import { setProactivityService } from "../proactivity/runtime.js";
 import { ProactivityService } from "../proactivity/service.js";
 import { getTotalQueueSize } from "../process/command-queue.js";
 import type { RuntimeEnv } from "../runtime.js";
@@ -771,6 +772,7 @@ export async function startGatewayServer(
       });
 
   if (proactivityService) {
+    setProactivityService(proactivityService);
     void proactivityService.start().catch((err) => {
       log.error(`proactivity failed to start: ${String(err)}`);
     });
@@ -1073,6 +1075,7 @@ export async function startGatewayServer(
       browserAuthRateLimiter.dispose();
       channelHealthMonitor?.stop();
       proactivityService?.stop();
+      setProactivityService(null);
       clearSecretsRuntimeSnapshot();
       await close(opts);
     },

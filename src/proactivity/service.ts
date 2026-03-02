@@ -5,7 +5,7 @@ import path from "node:path";
 import type { OpenClawConfig } from "../config/config.js";
 import { sendMessage } from "../infra/outbound/message.js";
 
-type CommitmentStatus = "open" | "in_progress" | "blocked" | "done" | "cancelled";
+type CommitmentStatus = "open" | "blocked" | "done" | "cancelled";
 type Priority = "low" | "med" | "high";
 type Severity = "info" | "warn" | "critical";
 
@@ -31,19 +31,27 @@ type QueueItem = {
   createdAt: string;
   attempts: number;
   severity: Severity;
-  tag: "ledger-reminder" | "nightly-consolidation" | "heartbeat";
+  tag: "ledger-reminder" | "nightly-consolidation" | "heartbeat" | "ops-alert";
   text: string;
 };
 
 type HeartbeatState = {
-  lastHash?: string;
   lastGatewayWarnAt?: string;
   lastConsolidatedDate?: string;
-  alertStates?: Record<string, string>;
+};
+
+type ContractState = {
+  pendingCommitmentRequired?: boolean;
+  pendingTriggeredAt?: string;
+  pendingTriggeredBy?: string;
+  nextCommitmentSeq?: number;
 };
 
 type ProactivityResolved = {
   enabled: boolean;
+  contractsEnabled: boolean;
+  reminderEngineEnabled: boolean;
+  heartbeatDashboardEnabled: boolean;
   owner: string;
   stateRoot: string;
   assetsRoot: string;
@@ -94,31 +102,38 @@ function ensure<T>(v: T | undefined, d: T): T {
   return v === undefined ? d : v;
 }
 
+function normalizeDiscordTarget(raw: string): string {
+  const v = raw.trim();
+  if (/^channel:\d+$/.test(v)) {
+    return v;
+  }
+  if (/^\d+$/.test(v)) {
+    return `channel:${v}`;
+  }
+  return v;
+}
+
 function resolveConfig(cfg: OpenClawConfig): ProactivityResolved {
   const p = cfg.proactivity;
   const home = os.homedir();
   return {
     enabled: p?.enabled !== false,
+    contractsEnabled: p?.contracts?.enabled !== false,
+    reminderEngineEnabled: p?.reminder?.engineEnabled !== false,
+    heartbeatDashboardEnabled: p?.heartbeat?.dashboardAlways !== false,
     owner: p?.owner?.trim() || "Tony",
     stateRoot: p?.stateRoot?.trim() || path.join(home, ".openclaw", "state", "proactivity"),
     assetsRoot: p?.assetsRoot?.trim() || path.join(home, ".openclaw", "workspace", "memory"),
     reportMode: p?.report?.mode === "context" ? "context" : "ops",
-    reportChannel: (() => {
-      const raw =
-        p?.report?.opsChannelId?.trim() || p?.report?.channel?.trim() || "1477815403865571349";
-      // Plugin SDK requires explicit routing for Discord: "channel:<id>" or "user:<id>".
-      // Our ops channel is always a channel.
-      if (/^\d+$/.test(raw)) {
-        return `channel:${raw}`;
-      }
-      return raw;
-    })(),
+    reportChannel: normalizeDiscordTarget(
+      p?.report?.opsChannelId?.trim() || p?.report?.channel?.trim() || "1477815403865571349",
+    ),
     slaDefaultHours: Math.max(0.1, Number(ensure(p?.sla?.defaultHours, 24))),
     atRiskThresholdHours: Math.max(0.0, Number(ensure(p?.reminder?.atRiskThresholdHours, 4))),
     blockedThresholdHours: Math.max(0.0, Number(ensure(p?.reminder?.blockedThresholdHours, 12))),
     heartbeatIntervalMs: Math.max(
       60_000,
-      Math.floor(ensure(p?.heartbeat?.intervalMinutes, 30) * 60_000),
+      Math.floor(ensure(p?.heartbeat?.intervalMinutes, 360) * 60_000),
     ),
     heartbeatQuietMode: p?.heartbeat?.quietMode !== false,
     consolidationLocalTime: p?.consolidation?.localTime?.trim() || "02:00",
@@ -137,7 +152,6 @@ function resolveConfig(cfg: OpenClawConfig): ProactivityResolved {
 async function mkdirp(dir: string) {
   await fs.mkdir(dir, { recursive: true });
 }
-
 async function readJsonFile<T>(file: string, fallback: T): Promise<T> {
   try {
     return JSON.parse(await fs.readFile(file, "utf8")) as T;
@@ -145,7 +159,6 @@ async function readJsonFile<T>(file: string, fallback: T): Promise<T> {
     return fallback;
   }
 }
-
 async function readJsonl<T>(file: string): Promise<T[]> {
   try {
     const raw = await fs.readFile(file, "utf8");
@@ -158,30 +171,24 @@ async function readJsonl<T>(file: string): Promise<T[]> {
     return [];
   }
 }
-
 async function appendJsonl(file: string, obj: unknown) {
   await mkdirp(path.dirname(file));
   await fs.appendFile(file, `${JSON.stringify(obj)}\n`, "utf8");
 }
-
 function iso(d: Date): string {
   return d.toISOString();
 }
-
 function dateKeyLocal(d: Date): string {
-  const y = d.getFullYear();
-  const m = `${d.getMonth() + 1}`.padStart(2, "0");
-  const day = `${d.getDate()}`.padStart(2, "0");
-  return `${y}-${m}-${day}`;
+  return `${d.getFullYear()}-${`${d.getMonth() + 1}`.padStart(2, "0")}-${`${d.getDate()}`.padStart(2, "0")}`;
 }
-
 function hoursBetween(fromIso: string, now: Date): number {
   return (now.getTime() - new Date(fromIso).getTime()) / 3600000;
 }
 
-function normalizeTextForHash(lines: string[]) {
-  return lines.join("\n").trim().toLowerCase();
-}
+const INTAKE_TRIGGER_RE =
+  /(承诺|保证|务必反馈|promise|guarantee|must\s+reply|must\s+report\s+back)/i;
+const EXPLICIT_COMMITMENT_RE = /(我承诺|我会在.+?(反馈|更新|完成)|I promise to|I commit to)/i;
+const CLOSE_RE = /(已完成（(C-\d{4,})）|\b(C-\d{4,})\s+done\b)/gi;
 
 export class ProactivityService {
   private readonly cfg: ProactivityResolved;
@@ -198,16 +205,13 @@ export class ProactivityService {
   private readonly snapshotsDir: string;
   private readonly queueFile: string;
   private readonly heartbeatStateFile: string;
+  private readonly contractStateFile: string;
   private readonly heartbeatLogDir: string;
   private readonly consolidationLogDir: string;
 
   constructor(deps: ProactivityServiceDeps) {
     this.cfg = resolveConfig(deps.cfg);
-    this.log = deps.log ?? {
-      info: () => {},
-      warn: () => {},
-      error: () => {},
-    };
+    this.log = deps.log ?? { info: () => {}, warn: () => {}, error: () => {} };
     this.now = deps.now ?? (() => new Date());
     this.getGatewayHealth = deps.getGatewayHealth;
 
@@ -216,34 +220,32 @@ export class ProactivityService {
     this.snapshotsDir = path.join(this.cfg.stateRoot, "commitments", "snapshots");
     this.queueFile = path.join(this.cfg.stateRoot, "notifications", "unsent-queue.jsonl");
     this.heartbeatStateFile = path.join(this.cfg.stateRoot, "watchlist", "heartbeat_state.json");
+    this.contractStateFile = path.join(this.cfg.stateRoot, "contracts", "state.json");
     this.heartbeatLogDir = path.join(this.cfg.stateRoot, "logs", "heartbeat");
     this.consolidationLogDir = path.join(this.cfg.stateRoot, "logs", "consolidation");
   }
 
   async start() {
     if (!this.cfg.enabled) {
-      this.log.info({ enabled: false }, "proactivity: disabled");
       return;
     }
-    await mkdirp(path.dirname(this.ledgerFile));
-    await mkdirp(path.dirname(this.queueFile));
-    await mkdirp(path.dirname(this.heartbeatStateFile));
-    await mkdirp(this.snapshotsDir);
-
+    await Promise.all([
+      mkdirp(path.dirname(this.ledgerFile)),
+      mkdirp(path.dirname(this.queueFile)),
+      mkdirp(path.dirname(this.heartbeatStateFile)),
+      mkdirp(path.dirname(this.contractStateFile)),
+      mkdirp(this.snapshotsDir),
+    ]);
     await this.ensureBootstrapJobs();
     await this.retryQueuedNotifications();
     await this.runHeartbeatCycle("startup");
-
     this.heartbeatTimer = setInterval(() => {
       void this.runHeartbeatCycle("interval");
     }, this.cfg.heartbeatIntervalMs);
-
     this.retryTimer = setInterval(() => {
       void this.retryQueuedNotifications();
     }, this.cfg.retryEveryMs);
-
     this.armNightlyTimer();
-    this.log.info({ enabled: true }, "proactivity: started");
   }
 
   stop() {
@@ -256,9 +258,23 @@ export class ProactivityService {
     if (this.nightlyTimer) {
       clearTimeout(this.nightlyTimer);
     }
-    this.heartbeatTimer = null;
-    this.retryTimer = null;
-    this.nightlyTimer = null;
+  }
+
+  private async readLatestCommitments(): Promise<Commitment[]> {
+    const all = await readJsonl<Commitment>(this.ledgerFile);
+    const latest = new Map<string, Commitment>();
+    for (const c of all) {
+      latest.set(c.id, c);
+    }
+    return [...latest.values()];
+  }
+
+  private async nextCommitmentId(): Promise<string> {
+    const st = await readJsonFile<ContractState>(this.contractStateFile, {});
+    const seq = Math.max(1, Number(st.nextCommitmentSeq ?? 1));
+    st.nextCommitmentSeq = seq + 1;
+    await fs.writeFile(this.contractStateFile, JSON.stringify(st, null, 2), "utf8");
+    return `C-${String(seq).padStart(4, "0")}`;
   }
 
   async addCommitment(input: {
@@ -271,7 +287,7 @@ export class ProactivityService {
   }) {
     const now = this.now();
     const c: Commitment = {
-      id: randomUUID(),
+      id: await this.nextCommitmentId(),
       created_at: iso(now),
       updated_at: iso(now),
       source: input.source,
@@ -296,27 +312,180 @@ export class ProactivityService {
   }
 
   async updateCommitmentStatus(id: string, status: CommitmentStatus, note?: string) {
-    const all = await readJsonl<Commitment>(this.ledgerFile);
-    const next = all.map((c) => (c.id === id ? { ...c, status, updated_at: iso(this.now()) } : c));
-    await fs.writeFile(
-      this.ledgerFile,
-      `${next.map((x) => JSON.stringify(x)).join("\n")}\n`,
-      "utf8",
-    );
+    const all = await this.readLatestCommitments();
+    const existing = all.find((c) => c.id.toLowerCase() === id.toLowerCase());
+    if (!existing) {
+      return false;
+    }
+    const next = { ...existing, status, updated_at: iso(this.now()) };
+    await appendJsonl(this.ledgerFile, next);
     await appendJsonl(this.eventsFile, {
       ts: iso(this.now()),
       type: "commitment.status",
-      commitment_id: id,
+      commitment_id: existing.id,
       status,
       note,
     });
+    return true;
+  }
+
+  async closeAllOpenCommitments(note?: string): Promise<number> {
+    const all = await this.readLatestCommitments();
+    const open = all.filter((c) => c.status === "open" || c.status === "blocked");
+    for (const c of open) {
+      await this.updateCommitmentStatus(c.id, "cancelled", note ?? "close-all");
+    }
+    return open.length;
+  }
+
+  async observeInboundUserMessage(text: string, source?: string) {
+    if (!this.cfg.contractsEnabled) {
+      return;
+    }
+    if (!INTAKE_TRIGGER_RE.test(text)) {
+      return;
+    }
+    const st = await readJsonFile<ContractState>(this.contractStateFile, {});
+    st.pendingCommitmentRequired = true;
+    st.pendingTriggeredAt = iso(this.now());
+    st.pendingTriggeredBy = source;
+    await fs.writeFile(this.contractStateFile, JSON.stringify(st, null, 2), "utf8");
+    await appendJsonl(this.eventsFile, {
+      ts: iso(this.now()),
+      type: "contract.intake.triggered",
+      source,
+      text,
+    });
+  }
+
+  async observeAssistantOutboundReply(text: string, source?: string) {
+    if (!this.cfg.contractsEnabled) {
+      return;
+    }
+    const nowIso = iso(this.now());
+    const st = await readJsonFile<ContractState>(this.contractStateFile, {});
+    if (st.pendingCommitmentRequired) {
+      if (!EXPLICIT_COMMITMENT_RE.test(text)) {
+        await this.notify({
+          severity: "critical",
+          tag: "ops-alert",
+          text: `contract violation: missing explicit commitment in next reply (${source ?? "unknown"})`,
+        });
+        await appendJsonl(this.eventsFile, {
+          ts: nowIso,
+          type: "contract.violation",
+          reason: "missing_explicit_commitment",
+          source,
+          text,
+        });
+      }
+      st.pendingCommitmentRequired = false;
+      await fs.writeFile(this.contractStateFile, JSON.stringify(st, null, 2), "utf8");
+    }
+
+    const matches = [...text.matchAll(CLOSE_RE)];
+    for (const m of matches) {
+      const id = (m[2] ?? m[3] ?? "").trim();
+      if (id) {
+        await this.updateCommitmentStatus(id, "done", "close-contract-phrase");
+      }
+    }
+  }
+
+  private classifyReportable(c: Commitment, now: Date): "overdue" | "blocked" | "atRisk" | null {
+    const baseHours = c.due_at
+      ? (new Date(c.due_at).getTime() - now.getTime()) / 3600000
+      : c.sla_hours - hoursBetween(c.created_at, now);
+    if (c.status === "blocked") {
+      return "blocked";
+    }
+    if (baseHours < 0) {
+      return "overdue";
+    }
+    if (baseHours <= this.cfg.atRiskThresholdHours) {
+      return "atRisk";
+    }
+    return null;
+  }
+
+  private async runReminderEngine(commitments: Commitment[], now: Date): Promise<string[]> {
+    if (!this.cfg.reminderEngineEnabled) {
+      return [];
+    }
+    const fired: string[] = [];
+    for (const c of commitments) {
+      if (c.status === "done" || c.status === "cancelled") {
+        continue;
+      }
+      const kind = this.classifyReportable(c, now);
+      if (!kind) {
+        continue;
+      }
+      const nextCheckAt = c.next_check_at ? new Date(c.next_check_at).getTime() : 0;
+      if (now.getTime() < nextCheckAt) {
+        continue;
+      }
+      fired.push(`${c.id} ${kind} — ${c.text.slice(0, 120)}`);
+      await this.notify({
+        severity: kind === "overdue" ? "critical" : "warn",
+        tag: "ledger-reminder",
+        text: `${c.id} ${kind}: ${c.text}`,
+      });
+      const reminderCount = (c.reminder_count ?? 0) + 1;
+      const backoffHours = Math.min(48, Math.max(1, 2 ** Math.min(8, reminderCount - 1)));
+      const updated: Commitment = {
+        ...c,
+        updated_at: iso(now),
+        last_reminder_at: iso(now),
+        reminder_count: reminderCount,
+        next_check_at: iso(new Date(now.getTime() + backoffHours * 3600000)),
+      };
+      await appendJsonl(this.ledgerFile, updated);
+      await appendJsonl(this.eventsFile, {
+        ts: iso(now),
+        type: "commitment.reminder",
+        commitment_id: c.id,
+        kind,
+        reminder_count: reminderCount,
+        next_check_at: updated.next_check_at,
+      });
+    }
+    return fired;
+  }
+
+  private buildHeartbeatDashboard(
+    reason: "startup" | "interval",
+    commitments: Commitment[],
+    now: Date,
+  ): string {
+    const reportable = commitments
+      .filter((c) => c.status !== "done" && c.status !== "cancelled")
+      .map((c) => ({ c, kind: this.classifyReportable(c, now) }))
+      .filter((x) => Boolean(x.kind)) as Array<{
+      c: Commitment;
+      kind: "overdue" | "blocked" | "atRisk";
+    }>;
+
+    const overdue = reportable.filter((x) => x.kind === "overdue");
+    const blocked = reportable.filter((x) => x.kind === "blocked");
+    const atRisk = reportable.filter((x) => x.kind === "atRisk");
+    const lines = [
+      `heartbeat dashboard (${reason})`,
+      `counts: overdue=${overdue.length}, blocked=${blocked.length}, atRisk=${atRisk.length}, totalReportable=${reportable.length}`,
+      "items:",
+      ...(reportable.length === 0
+        ? ["- none"]
+        : reportable.map(
+            ({ c, kind }) =>
+              `- ${c.id} [${kind}] status=${c.status} next_check_at=${c.next_check_at ?? "n/a"} text=${c.text.slice(0, 140)}`,
+          )),
+    ];
+    return lines.join("\n");
   }
 
   private async ensureBootstrapJobs() {
-    // Startup catch-up: if nightly missed (host asleep/down), run once on startup.
     const hb = await readJsonFile<HeartbeatState>(this.heartbeatStateFile, {});
-    const now = this.now();
-    const y = new Date(now.getTime() - 24 * 3600 * 1000);
+    const y = new Date(this.now().getTime() - 24 * 3600 * 1000);
     const yesterday = dateKeyLocal(y);
     if (hb.lastConsolidatedDate !== yesterday) {
       await this.runConsolidation(yesterday, "startup-catchup");
@@ -331,12 +500,15 @@ export class ProactivityService {
     if (next.getTime() <= now.getTime()) {
       next.setDate(next.getDate() + 1);
     }
-    const delay = Math.max(1000, next.getTime() - now.getTime());
-    this.nightlyTimer = setTimeout(() => {
-      const d = new Date(this.now().getTime() - 24 * 3600 * 1000);
-      const dayKey = dateKeyLocal(d);
-      void this.runConsolidation(dayKey, "scheduled").finally(() => this.armNightlyTimer());
-    }, delay);
+    this.nightlyTimer = setTimeout(
+      () => {
+        const d = new Date(this.now().getTime() - 24 * 3600 * 1000);
+        void this.runConsolidation(dateKeyLocal(d), "scheduled").finally(() =>
+          this.armNightlyTimer(),
+        );
+      },
+      Math.max(1000, next.getTime() - now.getTime()),
+    );
   }
 
   private async runHeartbeatCycle(reason: "startup" | "interval") {
@@ -344,127 +516,23 @@ export class ProactivityService {
       return;
     }
     this.heartbeatRunning = true;
-    const startedAt = this.now();
     try {
-      const commitments = await readJsonl<Commitment>(this.ledgerFile);
-      const hb = await readJsonFile<HeartbeatState>(this.heartbeatStateFile, { alertStates: {} });
-      const alertStates = hb.alertStates ?? {};
-      const lines: string[] = [];
       const now = this.now();
-
-      for (const c of commitments) {
-        if (c.status === "done" || c.status === "cancelled") {
-          continue;
-        }
-        const baseHours = c.due_at
-          ? (new Date(c.due_at).getTime() - now.getTime()) / 3600000
-          : c.sla_hours - hoursBetween(c.created_at, now);
-
-        let alertKey = "";
-        let severity: Severity = "info";
-        if (
-          c.status === "blocked" &&
-          hoursBetween(c.updated_at, now) >= this.cfg.blockedThresholdHours
-        ) {
-          alertKey = "blocked";
-          severity = "warn";
-        } else if (baseHours < 0) {
-          alertKey = "overdue";
-          severity = "critical";
-        } else if (baseHours <= this.cfg.atRiskThresholdHours) {
-          alertKey = "at-risk";
-          severity = "warn";
-        }
-
-        const stateKey = `${c.id}:${alertKey || "ok"}`;
-        if (alertKey && alertStates[c.id] !== stateKey) {
-          alertStates[c.id] = stateKey;
-          lines.push(
-            `${severity.toUpperCase()} ${c.id.slice(0, 8)} ${alertKey} — ${c.text.slice(0, 80)}${c.source ? ` [${c.source}]` : ""}`,
-          );
-          await this.updateCommitmentStatusReminder(c.id);
-        }
-      }
-
-      // Gateway health delta.
-      if (this.getGatewayHealth) {
-        const h = this.getGatewayHealth();
-        if (!h.ok) {
-          const lastWarn = hb.lastGatewayWarnAt ? new Date(hb.lastGatewayWarnAt).getTime() : 0;
-          if (now.getTime() - lastWarn >= this.cfg.degradedWarnEveryHours * 3600000) {
-            lines.push(`CRITICAL gateway degraded (errorRate=${h.errorRate ?? "n/a"})`);
-            hb.lastGatewayWarnAt = iso(now);
-          }
-        } else if (hb.lastGatewayWarnAt) {
-          lines.push("INFO gateway recovered");
-          hb.lastGatewayWarnAt = undefined;
-        }
-      }
-
-      const normalized = normalizeTextForHash(lines);
-      const shouldEmit = lines.length > 0 && normalized !== (hb.lastHash ?? "");
-      if (shouldEmit) {
-        hb.lastHash = normalized;
-        const severity: Severity = lines.some((l) => l.startsWith("CRITICAL"))
-          ? "critical"
-          : lines.some((l) => l.startsWith("WARN"))
-            ? "warn"
-            : "info";
-        await this.notify({
-          severity,
-          tag: "heartbeat",
-          text: `heartbeat (${reason})\n${lines.join("\n")}`,
-        });
-      } else if (!this.cfg.heartbeatQuietMode && lines.length === 0) {
+      const commitments = await this.readLatestCommitments();
+      await this.runReminderEngine(commitments, now);
+      if (this.cfg.heartbeatDashboardEnabled) {
         await this.notify({
           severity: "info",
           tag: "heartbeat",
-          text: "heartbeat: no major changes",
+          text: this.buildHeartbeatDashboard(reason, commitments, now),
         });
       }
-
-      hb.alertStates = alertStates;
-      await fs.writeFile(this.heartbeatStateFile, JSON.stringify(hb, null, 2), "utf8");
-      await appendJsonl(path.join(this.heartbeatLogDir, `${dateKeyLocal(now)}.jsonl`), {
-        run_id: randomUUID(),
-        started_at: iso(startedAt),
-        ended_at: iso(this.now()),
-        status: "ok",
-        emitted: shouldEmit,
-      });
       await this.writeSnapshot();
     } catch (err) {
-      await appendJsonl(path.join(this.heartbeatLogDir, `${dateKeyLocal(this.now())}.jsonl`), {
-        run_id: randomUUID(),
-        started_at: iso(startedAt),
-        ended_at: iso(this.now()),
-        status: "error",
-        error: String(err),
-      });
       this.log.error({ err: String(err) }, "proactivity: heartbeat failed");
     } finally {
       this.heartbeatRunning = false;
     }
-  }
-
-  private async updateCommitmentStatusReminder(id: string) {
-    const all = await readJsonl<Commitment>(this.ledgerFile);
-    const nowIso = iso(this.now());
-    const next = all.map((c) =>
-      c.id === id
-        ? {
-            ...c,
-            updated_at: nowIso,
-            last_reminder_at: nowIso,
-            reminder_count: (c.reminder_count ?? 0) + 1,
-          }
-        : c,
-    );
-    await fs.writeFile(
-      this.ledgerFile,
-      `${next.map((x) => JSON.stringify(x)).join("\n")}\n`,
-      "utf8",
-    );
   }
 
   private async runConsolidation(dayKey: string, trigger: "scheduled" | "startup-catchup") {
@@ -479,18 +547,15 @@ export class ProactivityService {
       await mkdirp(dailyDir);
       await mkdirp(path.dirname(memoryFile));
       const dailyFile = path.join(dailyDir, `${dayKey}.md`);
-
-      const events = (await readJsonl<Record<string, unknown>>(this.eventsFile)).filter((e) => {
-        const ts = e.ts;
-        return typeof ts === "string" && ts.startsWith(dayKey);
-      });
+      const events = (await readJsonl<Record<string, unknown>>(this.eventsFile)).filter(
+        (e) => typeof e.ts === "string" && String(e.ts).startsWith(dayKey),
+      );
       const summary = [
         `# Daily Summary (${dayKey})`,
         "",
         `- commitments events: ${events.length}`,
         "- consolidation inputs: A+B (C deferred)",
       ].join("\n");
-
       let dailyCurrent = "";
       try {
         dailyCurrent = await fs.readFile(dailyFile, "utf8");
@@ -499,7 +564,6 @@ export class ProactivityService {
         await fs.writeFile(dailyFile, `${dailyCurrent.trim()}\n\n${summary}\n`, "utf8");
         changedFiles.push(dailyFile);
       }
-
       let memoryCurrent = "";
       try {
         memoryCurrent = await fs.readFile(memoryFile, "utf8");
@@ -513,12 +577,9 @@ export class ProactivityService {
         );
         changedFiles.push(memoryFile);
       }
-
       const hb = await readJsonFile<HeartbeatState>(this.heartbeatStateFile, {});
       hb.lastConsolidatedDate = dayKey;
       await fs.writeFile(this.heartbeatStateFile, JSON.stringify(hb, null, 2), "utf8");
-
-      const status = "success";
       await fs.writeFile(
         logFile,
         JSON.stringify(
@@ -526,7 +587,7 @@ export class ProactivityService {
             run_id: runId,
             started_at: iso(started),
             ended_at: iso(this.now()),
-            status,
+            status: "success",
             trigger,
             changedFiles,
           },
@@ -535,14 +596,6 @@ export class ProactivityService {
         ),
         "utf8",
       );
-
-      if (!this.cfg.consolidationQuietMode || changedFiles.length > 0) {
-        await this.notify({
-          severity: "info",
-          tag: "nightly-consolidation",
-          text: `nightly consolidation ${status}\nchanged: ${changedFiles.length ? changedFiles.join(", ") : "none"}`,
-        });
-      }
     } catch (err) {
       await fs.writeFile(
         logFile,
@@ -561,24 +614,18 @@ export class ProactivityService {
         ),
         "utf8",
       );
-      await this.notify({
-        severity: "critical",
-        tag: "nightly-consolidation",
-        text: `nightly consolidation fail: ${String(err)}`,
-      });
     }
   }
 
   private async writeSnapshot() {
-    const commitments = await readJsonl<Commitment>(this.ledgerFile);
+    const commitments = await this.readLatestCommitments();
     const now = this.now();
-    const file = path.join(this.snapshotsDir, `${dateKeyLocal(now)}.json`);
     await fs.writeFile(
-      file,
+      path.join(this.snapshotsDir, `${dateKeyLocal(now)}.json`),
       JSON.stringify(
         {
           at: iso(now),
-          open: commitments.filter((c) => !["done", "cancelled"].includes(c.status)).length,
+          open: commitments.filter((c) => c.status === "open" || c.status === "blocked").length,
           total: commitments.length,
         },
         null,
@@ -588,11 +635,7 @@ export class ProactivityService {
     );
   }
 
-  private async notify(input: {
-    severity: Severity;
-    tag: "ledger-reminder" | "nightly-consolidation" | "heartbeat";
-    text: string;
-  }) {
+  private async notify(input: { severity: Severity; tag: QueueItem["tag"]; text: string }) {
     if (this.cfg.rollout === "shadow") {
       return;
     }
@@ -603,7 +646,7 @@ export class ProactivityService {
     try {
       await sendMessage({
         channel: "discord",
-        to: this.cfg.reportChannel,
+        to: normalizeDiscordTarget(this.cfg.reportChannel),
         content: body,
       });
     } catch {
@@ -629,7 +672,7 @@ export class ProactivityService {
       try {
         await sendMessage({
           channel: "discord",
-          to: this.cfg.reportChannel,
+          to: normalizeDiscordTarget(this.cfg.reportChannel),
           content: `[${item.tag}] ${item.text}`,
         });
       } catch {
