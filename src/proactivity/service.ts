@@ -44,6 +44,7 @@ type ContractState = {
   pendingCommitmentRequired?: boolean;
   pendingTriggeredAt?: string;
   pendingTriggeredBy?: string;
+  pendingTriggeredText?: string;
   nextCommitmentSeq?: number;
 };
 
@@ -359,6 +360,7 @@ export class ProactivityService {
     st.pendingCommitmentRequired = true;
     st.pendingTriggeredAt = iso(this.now());
     st.pendingTriggeredBy = source;
+    st.pendingTriggeredText = text;
     await fs.writeFile(this.contractStateFile, JSON.stringify(st, null, 2), "utf8");
     await appendJsonl(this.eventsFile, {
       ts: iso(this.now()),
@@ -368,38 +370,94 @@ export class ProactivityService {
     });
   }
 
-  async observeAssistantOutboundReply(text: string, source?: string) {
+  /**
+   * Enforce/observe outbound replies for system-level contracts.
+   * Returns the (possibly modified) text that must be sent to the user.
+   */
+  async enforceAssistantOutboundReply(text: string, source?: string): Promise<string> {
     if (!this.cfg.contractsEnabled) {
-      return;
+      return text;
     }
-    const nowIso = iso(this.now());
+    const now = this.now();
+    const nowIso = iso(now);
     const st = await readJsonFile<ContractState>(this.contractStateFile, {});
+
+    let out = text;
+
+    // Intake contract: if triggered, the *next* assistant reply must contain an explicit commitment sentence WITH an ID.
     if (st.pendingCommitmentRequired) {
-      if (!EXPLICIT_COMMITMENT_RE.test(text)) {
-        await this.notify({
-          severity: "critical",
-          tag: "ops-alert",
-          text: `contract violation: missing explicit commitment in next reply (${source ?? "unknown"})`,
-        });
+      if (!EXPLICIT_COMMITMENT_RE.test(out)) {
+        // Create a commitment immediately (system-level, not prompt-based).
+        const nextSeq = Math.max(1, Math.floor(st.nextCommitmentSeq ?? 1));
+        const id = `C-${String(nextSeq).padStart(4, "0")}`;
+        st.nextCommitmentSeq = nextSeq + 1;
+
+        const commitmentText = (st.pendingTriggeredText ?? "(no text)").trim().slice(0, 500);
+        const createdAt = nowIso;
+        const dueAt = iso(new Date(now.getTime() + this.cfg.slaDefaultHours * 3600000));
+        const nextCheckAt = iso(
+          new Date(now.getTime() + this.cfg.slaDefaultHours * 3600000 + 60_000),
+        );
+
+        const commitment: Commitment = {
+          id,
+          text: commitmentText,
+          owner: this.cfg.owner,
+          status: "open",
+          source: source ?? st.pendingTriggeredBy ?? "unknown",
+          created_at: createdAt,
+          updated_at: createdAt,
+          sla_hours: this.cfg.slaDefaultHours,
+          due_at: dueAt,
+          next_check_at: nextCheckAt,
+          reminder_count: 0,
+        };
+
+        await appendJsonl(this.ledgerFile, commitment);
         await appendJsonl(this.eventsFile, {
-          ts: nowIso,
-          type: "contract.violation",
-          reason: "missing_explicit_commitment",
+          ts: createdAt,
+          type: "commitment.created",
+          commitment_id: id,
+          source: commitment.source,
+          text: commitment.text,
+          due_at: commitment.due_at,
+        });
+
+        await this.notify({
+          severity: "info",
+          tag: "ledger",
+          text: `[ledger] created ${id} (due≈${this.cfg.slaDefaultHours}h) — ${commitment.text.slice(0, 120)}`,
+        });
+
+        // Auto-append an explicit commitment sentence so the outbound reply becomes contract-compliant.
+        const appendLine = `已承诺（${id}）：我会在完成后给你反馈。`;
+        out = out.trim() ? `${out.trim()}\n\n${appendLine}` : appendLine;
+
+        await appendJsonl(this.eventsFile, {
+          ts: createdAt,
+          type: "contract.intake.autofix",
+          commitment_id: id,
           source,
-          text,
         });
       }
+
       st.pendingCommitmentRequired = false;
+      st.pendingTriggeredAt = undefined;
+      st.pendingTriggeredBy = undefined;
+      st.pendingTriggeredText = undefined;
       await fs.writeFile(this.contractStateFile, JSON.stringify(st, null, 2), "utf8");
     }
 
-    const matches = [...text.matchAll(CLOSE_RE)];
+    // Close contract phrases: explicit close sentence containing ID.
+    const matches = [...out.matchAll(CLOSE_RE)];
     for (const m of matches) {
       const id = (m[2] ?? m[3] ?? "").trim();
       if (id) {
         await this.updateCommitmentStatus(id, "done", "close-contract-phrase");
       }
     }
+
+    return out;
   }
 
   private classifyReportable(c: Commitment, now: Date): "overdue" | "blocked" | "atRisk" | null {

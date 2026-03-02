@@ -91,7 +91,7 @@ describe("proactivity service", () => {
     svc.stop();
   });
 
-  it("logs contract violation + critical alert when commitment sentence missing", async () => {
+  it("autofixes intake contract by creating commitment + appending explicit commitment sentence", async () => {
     const root = await mkTmp("oc-p-contract-");
     const now = new Date("2026-03-01T20:00:00.000Z");
     const svc = new ProactivityService({
@@ -107,14 +107,14 @@ describe("proactivity service", () => {
     });
     await svc.start();
     await svc.observeInboundUserMessage("please promise you'll report back", "discord:channel:1");
-    await svc.observeAssistantOutboundReply("got it", "discord:channel:1");
+    await svc.enforceAssistantOutboundReply("got it", "discord:channel:1");
     const sent = sendMessageMock.mock.calls.map((c) => String(c?.[0]?.content ?? "")).join("\n");
-    expect(sent).toContain("[ops-alert]");
+    expect(sent).toContain("[ledger]");
     const events = await fs.readFile(
       path.join(root, "state", "commitments", "events.jsonl"),
       "utf8",
     );
-    expect(events).toContain("contract.violation");
+    expect(events).toContain("contract.intake.autofix");
     svc.stop();
   });
 
@@ -134,7 +134,7 @@ describe("proactivity service", () => {
     });
     await svc.start();
     const c = await svc.addCommitment({ text: "do task" });
-    await svc.observeAssistantOutboundReply(`${c.id} done`, "discord:channel:1");
+    await svc.enforceAssistantOutboundReply(`${c.id} done`, "discord:channel:1");
     const ledger = await fs.readFile(
       path.join(root, "state", "commitments", "ledger.jsonl"),
       "utf8",

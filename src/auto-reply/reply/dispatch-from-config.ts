@@ -322,9 +322,9 @@ export async function dispatchReplyFromConfig(params: {
         queuedFinal = dispatcher.sendFinalReply(payload);
       }
       if (proactivity && payload.text) {
-        void proactivity
-          .observeAssistantOutboundReply(payload.text, `${channel}:${chatId ?? "unknown"}`)
-          .catch(() => undefined);
+        payload.text = await proactivity
+          .enforceAssistantOutboundReply(payload.text, `${channel}:${chatId ?? "unknown"}`)
+          .catch(() => payload.text);
       }
       const counts = dispatcher.getQueuedCounts();
       counts.final += routedFinalCount;
@@ -513,9 +513,9 @@ export async function dispatchReplyFromConfig(params: {
         ttsAuto: sessionTtsAuto,
       });
       if (proactivity && ttsReply.text) {
-        void proactivity
-          .observeAssistantOutboundReply(ttsReply.text, `${channel}:${chatId ?? "unknown"}`)
-          .catch(() => undefined);
+        ttsReply.text = await proactivity
+          .enforceAssistantOutboundReply(ttsReply.text, `${channel}:${chatId ?? "unknown"}`)
+          .catch(() => ttsReply.text);
       }
       if (shouldRouteToOriginating && originatingChannel && originatingTo) {
         // Route final reply to originating channel.
