@@ -323,6 +323,7 @@ export const OpenClawSchema = z
           .object({
             atRiskThresholdHours: z.number().positive().optional(),
             blockedThresholdHours: z.number().positive().optional(),
+            engineEnabled: z.boolean().optional(),
           })
           .strict()
           .optional(),
@@ -331,6 +332,7 @@ export const OpenClawSchema = z
             intervalMinutes: z.number().int().positive().optional(),
             quietMode: z.boolean().optional(),
             degradedModeWarnEveryHours: z.number().positive().optional(),
+            dashboardAlways: z.boolean().optional(),
           })
           .strict()
           .optional(),
@@ -359,6 +361,12 @@ export const OpenClawSchema = z
           .object({
             retryEveryMinutes: z.number().int().positive().optional(),
             maxAttempts: z.number().int().positive().optional(),
+          })
+          .strict()
+          .optional(),
+        contracts: z
+          .object({
+            enabled: z.boolean().optional(),
           })
           .strict()
           .optional(),

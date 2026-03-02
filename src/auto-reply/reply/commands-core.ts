@@ -12,6 +12,7 @@ import { shouldHandleTextCommands } from "../commands-registry.js";
 import { handleAllowlistCommand } from "./commands-allowlist.js";
 import { handleApproveCommand } from "./commands-approve.js";
 import { handleBashCommand } from "./commands-bash.js";
+import { handleCommitCommand } from "./commands-commit.js";
 import { handleCompactCommand } from "./commands-compact.js";
 import { handleConfigCommand, handleDebugCommand } from "./commands-config.js";
 import {
@@ -53,6 +54,7 @@ export async function handleCommands(params: HandleCommandsParams): Promise<Comm
       handleStatusCommand,
       handleAllowlistCommand,
       handleApproveCommand,
+      handleCommitCommand,
       handleContextCommand,
       handleWhoamiCommand,
       handleSubagentsCommand,

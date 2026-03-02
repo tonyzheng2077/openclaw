@@ -16,11 +16,13 @@ export type ProactivityConfig = {
   reminder?: {
     atRiskThresholdHours?: number;
     blockedThresholdHours?: number;
+    engineEnabled?: boolean;
   };
   heartbeat?: {
     intervalMinutes?: number;
     quietMode?: boolean;
     degradedModeWarnEveryHours?: number;
+    dashboardAlways?: boolean;
   };
   consolidation?: {
     localTime?: string;
@@ -35,5 +37,8 @@ export type ProactivityConfig = {
   queue?: {
     retryEveryMinutes?: number;
     maxAttempts?: number;
+  };
+  contracts?: {
+    enabled?: boolean;
   };
 };

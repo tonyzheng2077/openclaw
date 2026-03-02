@@ -12,6 +12,7 @@ import {
   logSessionStateChange,
 } from "../../logging/diagnostic.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
+import { getProactivityService } from "../../proactivity/runtime.js";
 import { maybeApplyTtsToPayload, normalizeTtsAutoMode, resolveTtsConfig } from "../../tts/tts.js";
 import { getReplyFromConfig } from "../reply.js";
 import { formatAbortReplyText, tryFastAbortFromMessage } from "./abort.js";
@@ -148,6 +149,20 @@ export async function dispatchReplyFromConfig(params: {
   const inboundAudio = isInboundAudioContext(ctx);
   const sessionTtsAuto = resolveSessionTtsAuto(ctx, cfg);
   const hookRunner = getGlobalHookRunner();
+  const proactivity = getProactivityService();
+  const inboundContent =
+    typeof ctx.BodyForCommands === "string"
+      ? ctx.BodyForCommands
+      : typeof ctx.RawBody === "string"
+        ? ctx.RawBody
+        : typeof ctx.Body === "string"
+          ? ctx.Body
+          : "";
+  if (proactivity) {
+    void proactivity
+      .observeInboundUserMessage(inboundContent, `${channel}:${chatId ?? "unknown"}`)
+      .catch(() => undefined);
+  }
   if (hookRunner?.hasHooks("message_received")) {
     const timestamp =
       typeof ctx.Timestamp === "number" && Number.isFinite(ctx.Timestamp)
@@ -278,6 +293,11 @@ export async function dispatchReplyFromConfig(params: {
       } else {
         queuedFinal = dispatcher.sendFinalReply(payload);
       }
+      if (proactivity && payload.text) {
+        void proactivity
+          .observeAssistantOutboundReply(payload.text, `${channel}:${chatId ?? "unknown"}`)
+          .catch(() => undefined);
+      }
       const counts = dispatcher.getQueuedCounts();
       counts.final += routedFinalCount;
       recordProcessed("completed", { reason: "fast_abort" });
@@ -360,6 +380,11 @@ export async function dispatchReplyFromConfig(params: {
         inboundAudio,
         ttsAuto: sessionTtsAuto,
       });
+      if (proactivity && ttsReply.text) {
+        void proactivity
+          .observeAssistantOutboundReply(ttsReply.text, `${channel}:${chatId ?? "unknown"}`)
+          .catch(() => undefined);
+      }
       if (shouldRouteToOriginating && originatingChannel && originatingTo) {
         // Route final reply to originating channel.
         const result = await routeReply({

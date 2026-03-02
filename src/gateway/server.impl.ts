@@ -45,6 +45,7 @@ import { startDiagnosticHeartbeat, stopDiagnosticHeartbeat } from "../logging/di
 import { createSubsystemLogger, runtimeForLogger } from "../logging/subsystem.js";
 import { getGlobalHookRunner, runGlobalGatewayStopSafely } from "../plugins/hook-runner-global.js";
 import { createEmptyPluginRegistry } from "../plugins/registry.js";
+import { setProactivityService } from "../proactivity/runtime.js";
 import { ProactivityService } from "../proactivity/service.js";
 import { getTotalQueueSize } from "../process/command-queue.js";
 import { runOnboardingWizard } from "../wizard/onboarding.js";
@@ -522,6 +523,7 @@ export async function startGatewayServer(
       });
 
   if (proactivityService) {
+    setProactivityService(proactivityService);
     void proactivityService.start().catch((err) => {
       log.error(`proactivity failed to start: ${String(err)}`);
     });
@@ -745,6 +747,7 @@ export async function startGatewayServer(
       skillsChangeUnsub();
       authRateLimiter?.dispose();
       proactivityService?.stop();
+      setProactivityService(null);
       await close(opts);
     },
   };
