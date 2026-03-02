@@ -31,7 +31,7 @@ type QueueItem = {
   createdAt: string;
   attempts: number;
   severity: Severity;
-  tag: "ledger-reminder" | "nightly-consolidation" | "heartbeat" | "ops-alert";
+  tag: "ledger" | "ledger-reminder" | "nightly-consolidation" | "heartbeat" | "ops-alert";
   text: string;
 };
 
@@ -404,6 +404,8 @@ export class ProactivityService {
           text: commitmentText,
           owner: this.cfg.owner,
           status: "open",
+          priority: "high",
+          project: "contracts/intake",
           source: source ?? st.pendingTriggeredBy ?? "unknown",
           created_at: createdAt,
           updated_at: createdAt,
