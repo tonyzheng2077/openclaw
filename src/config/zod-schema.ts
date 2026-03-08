@@ -116,6 +116,19 @@ const MemorySchema = z
     backend: z.union([z.literal("builtin"), z.literal("qmd")]).optional(),
     citations: z.union([z.literal("auto"), z.literal("on"), z.literal("off")]).optional(),
     qmd: MemoryQmdSchema.optional(),
+    readMiddleware: z
+      .object({
+        enabled: z.boolean().optional(),
+        mode: z.union([z.literal("hard_gate"), z.literal("shadow")]).optional(),
+        command: z.string().optional(),
+        commandArgs: z.array(z.string()).optional(),
+        timeoutMs: z.number().int().positive().optional(),
+        denyOnError: z.boolean().optional(),
+        requireSourceReceipt: z.boolean().optional(),
+        transformDeniedClaims: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
   .optional();

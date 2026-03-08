@@ -354,6 +354,14 @@ export const FIELD_LABELS: Record<string, string> = {
   "agents.defaults.memorySearch.query.hybrid.temporalDecay.enabled": "Memory Search Temporal Decay",
   "agents.defaults.memorySearch.query.hybrid.temporalDecay.halfLifeDays":
     "Memory Search Temporal Decay Half-life (Days)",
+  "agents.defaults.memorySearch.query.pathRouting": "Memory Search Path Routing",
+  "agents.defaults.memorySearch.query.pathRouting.include": "Memory Search Path Include",
+  "agents.defaults.memorySearch.query.pathRouting.exclude": "Memory Search Path Exclude",
+  "agents.defaults.memorySearch.query.pathRouting.priority": "Memory Search Path Priority",
+  "agents.defaults.memorySearch.query.pathRouting.priority.pattern":
+    "Memory Search Path Priority Pattern",
+  "agents.defaults.memorySearch.query.pathRouting.priority.weight":
+    "Memory Search Path Priority Weight",
   "agents.defaults.memorySearch.cache.enabled": "Memory Search Embedding Cache",
   "agents.defaults.memorySearch.cache.maxEntries": "Memory Search Embedding Cache Max Entries",
   memory: "Memory",

@@ -613,6 +613,44 @@ You can enable either feature independently:
 - **Temporal decay only** — useful when recency matters but your results are already diverse.
 - **Both** — recommended for agents with large, long-running daily note histories.
 
+### Path routing (include/exclude/priority)
+
+You can apply **query-time** path filtering and weighted reranking with `memorySearch.query.pathRouting`.
+This is useful when your workspace has structured folders you want to favor (for example
+`preferences/`, `projects/`, `decisions/`, `references/`, or `knowledge/*/daily`) and noisy
+folders you want to down-rank or exclude.
+
+```json5
+agents: {
+  defaults: {
+    memorySearch: {
+      query: {
+        pathRouting: {
+          include: ["memory/**"],
+          exclude: ["memory/tmp/**", "memory/chatter/**"],
+          priority: [
+            { pattern: "memory/preferences/**", weight: 2.0 },
+            { pattern: "memory/projects/**", weight: 1.6 },
+            { pattern: "memory/decisions/**", weight: 1.6 },
+            { pattern: "memory/references/**", weight: 1.4 },
+            { pattern: "memory/knowledge/*/daily/**", weight: 1.3 },
+            { pattern: "memory/scratch/**", weight: 0.6 }
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+Notes:
+
+- Rules are applied at query time; indexing/storage behavior is unchanged.
+- `include` acts as an allowlist, `exclude` removes matches.
+- `priority` multiplies per-result score by `weight` (default 1.0).
+- When multiple priority patterns match a path, the **last matching rule wins**.
+- If `pathRouting` is unset, behavior is unchanged from previous versions.
+
 ### Embedding cache
 
 OpenClaw can cache **chunk embeddings** in SQLite so reindexing and frequent updates (especially session transcripts) don't re-embed unchanged text.

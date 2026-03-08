@@ -72,6 +72,14 @@ export type ResolvedMemorySearchConfig = {
         halfLifeDays: number;
       };
     };
+    pathRouting?: {
+      include?: string[];
+      exclude?: string[];
+      priority?: Array<{
+        pattern: string;
+        weight: number;
+      }>;
+    };
   };
   cache: {
     enabled: boolean;
@@ -130,6 +138,58 @@ function resolveStorePath(agentId: string, raw?: string): string {
   }
   const withToken = raw.includes("{agentId}") ? raw.replaceAll("{agentId}", agentId) : raw;
   return resolveUserPath(withToken);
+}
+
+function normalizeGlobList(values: string[] | undefined): string[] | undefined {
+  if (!values?.length) {
+    return undefined;
+  }
+  const normalized = values.map((value) => value.trim()).filter(Boolean);
+  if (normalized.length === 0) {
+    return undefined;
+  }
+  return Array.from(new Set(normalized));
+}
+
+function normalizePathRouting(
+  defaults: MemorySearchConfig | undefined,
+  overrides: MemorySearchConfig | undefined,
+): ResolvedMemorySearchConfig["query"]["pathRouting"] {
+  const include = normalizeGlobList([
+    ...(defaults?.query?.pathRouting?.include ?? []),
+    ...(overrides?.query?.pathRouting?.include ?? []),
+  ]);
+  const exclude = normalizeGlobList([
+    ...(defaults?.query?.pathRouting?.exclude ?? []),
+    ...(overrides?.query?.pathRouting?.exclude ?? []),
+  ]);
+  const rawPriority = [
+    ...(defaults?.query?.pathRouting?.priority ?? []),
+    ...(overrides?.query?.pathRouting?.priority ?? []),
+  ];
+  const priority = rawPriority
+    .map((entry) => {
+      const pattern = entry?.pattern?.trim();
+      if (!pattern) {
+        return null;
+      }
+      const rawWeight = entry.weight;
+      const weight =
+        typeof rawWeight === "number" && Number.isFinite(rawWeight)
+          ? clampNumber(rawWeight, 0, 10)
+          : 1;
+      return { pattern, weight };
+    })
+    .filter((entry): entry is { pattern: string; weight: number } => entry !== null);
+
+  if (!include && !exclude && priority.length === 0) {
+    return undefined;
+  }
+  return {
+    include,
+    exclude,
+    priority: priority.length > 0 ? priority : undefined,
+  };
 }
 
 function mergeConfig(
@@ -282,6 +342,7 @@ function mergeConfig(
     enabled: overrides?.cache?.enabled ?? defaults?.cache?.enabled ?? DEFAULT_CACHE_ENABLED,
     maxEntries: overrides?.cache?.maxEntries ?? defaults?.cache?.maxEntries,
   };
+  const pathRouting = normalizePathRouting(defaults, overrides);
 
   const overlap = clampNumber(chunking.overlap, 0, Math.max(0, chunking.tokens - 1));
   const minScore = clampNumber(query.minScore, 0, 1);
@@ -341,6 +402,7 @@ function mergeConfig(
           halfLifeDays: temporalDecayHalfLifeDays,
         },
       },
+      pathRouting,
     },
     cache: {
       enabled: Boolean(cache.enabled),

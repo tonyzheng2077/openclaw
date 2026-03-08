@@ -73,6 +73,10 @@ const ttsMocks = vi.hoisted(() => {
   };
 });
 
+const memoryReadMocks = vi.hoisted(() => ({
+  apply: vi.fn(async ({ replies }: { replies: ReplyPayload[] }) => replies),
+}));
+
 vi.mock("./route-reply.js", () => ({
   isRoutableChannel: (channel: string | undefined) =>
     Boolean(
@@ -143,6 +147,10 @@ vi.mock("../../tts/tts.js", () => ({
   maybeApplyTtsToPayload: (params: unknown) => ttsMocks.maybeApplyTtsToPayload(params),
   normalizeTtsAutoMode: (value: unknown) => ttsMocks.normalizeTtsAutoMode(value),
   resolveTtsConfig: (cfg: OpenClawConfig) => ttsMocks.resolveTtsConfig(cfg),
+}));
+
+vi.mock("./memory-read-middleware.js", () => ({
+  applyMemoryReadMiddlewareToReplies: memoryReadMocks.apply,
 }));
 
 const { dispatchReplyFromConfig } = await import("./dispatch-from-config.js");
@@ -218,16 +226,23 @@ describe("dispatchReplyFromConfig", () => {
     hookMocks.runner.hasHooks.mockClear();
     hookMocks.runner.hasHooks.mockReturnValue(false);
     hookMocks.runner.runMessageReceived.mockClear();
+
+    memoryReadMocks.apply.mockReset();
+    memoryReadMocks.apply.mockImplementation(async ({ replies }: { replies: ReplyPayload[] }) => replies);
+
     internalHookMocks.createInternalHookEvent.mockClear();
     internalHookMocks.createInternalHookEvent.mockImplementation(createInternalHookEventPayload);
     internalHookMocks.triggerInternalHook.mockClear();
+
     acpMocks.readAcpSessionEntry.mockReset();
     acpMocks.readAcpSessionEntry.mockReturnValue(null);
     acpMocks.upsertAcpSessionMeta.mockReset();
     acpMocks.upsertAcpSessionMeta.mockResolvedValue(null);
     acpMocks.requireAcpRuntimeBackend.mockReset();
+
     sessionBindingMocks.listBySession.mockReset();
     sessionBindingMocks.listBySession.mockReturnValue([]);
+
     ttsMocks.state.synthesizeFinalAudio = false;
     ttsMocks.maybeApplyTtsToPayload.mockClear();
     ttsMocks.normalizeTtsAutoMode.mockClear();
@@ -519,6 +534,63 @@ describe("dispatchReplyFromConfig", () => {
       Provider: "telegram",
       ChatType: "group",
     });
+
+    const replyResolver = async (
+      _ctx: MsgContext,
+      opts?: GetReplyOptions,
+      _cfg?: OpenClawConfig,
+    ) => {
+      expect(opts?.onToolResult).toBeDefined();
+      await opts?.onToolResult?.({ text: "🔧 exec: ls" });
+      await opts?.onToolResult?.({
+        text: "NO_REPLY",
+        mediaUrls: ["https://example.com/tts-group.opus"],
+      });
+      return { text: "hi" } satisfies ReplyPayload;
+    };
+
+    await dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyResolver });
+
+    expect(dispatcher.sendToolResult).toHaveBeenCalledTimes(1);
+    const sent = firstToolResultPayload(dispatcher);
+    expect(sent?.mediaUrls).toEqual(["https://example.com/tts-group.opus"]);
+    expect(sent?.text).toBeUndefined();
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs memory read middleware at final reply boundary", async () => {
+    mocks.tryFastAbortFromMessage.mockResolvedValue({ handled: false, aborted: false });
+    const cfg = { memory: { readMiddleware: { enabled: true } } } as OpenClawConfig;
+    const dispatcher = createDispatcher();
+    const ctx = buildTestCtx({ Provider: "telegram", BodyForCommands: "what do you remember" });
+
+    const replyResolver = async () => ({ text: "I remember your rule" }) satisfies ReplyPayload;
+    await dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyResolver });
+
+    expect(memoryReadMocks.apply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cfg,
+        ctx,
+        replies: [{ text: "I remember your rule" }],
+      }),
+    );
+  });
+
+  it("uses transformed fallback when middleware denies confident memory claim", async () => {
+    mocks.tryFastAbortFromMessage.mockResolvedValue({ handled: false, aborted: false });
+    memoryReadMocks.apply.mockResolvedValue([{ text: "I couldn't verify that from memory right now." }]);
+    const cfg = { memory: { readMiddleware: { enabled: true } } } as OpenClawConfig;
+    const dispatcher = createDispatcher();
+    const ctx = buildTestCtx({ Provider: "telegram" });
+
+    const replyResolver = async () => ({ text: "I remember your default policy" }) satisfies ReplyPayload;
+    await dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyResolver });
+
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "I couldn't verify that from memory right now." }),
+    );
+  });
+
 
     const replyResolver = async (
       _ctx: MsgContext,
