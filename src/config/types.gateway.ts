@@ -352,6 +352,13 @@ export type GatewayToolsConfig = {
   allow?: string[];
 };
 
+export type GatewayTurnWatchdogConfig = {
+  /** Enable gateway-level turn watchdog heartbeats (default: true). */
+  enabled?: boolean;
+  /** Interval in milliseconds between watchdog checks/heartbeats (default: 300000). */
+  intervalMs?: number;
+};
+
 export type GatewayConfig = {
   /** Single multiplexed port for Gateway WS + HTTP (default: 18789). */
   port?: number;
@@ -399,4 +406,6 @@ export type GatewayConfig = {
    * Set to 0 to disable. Default: 5.
    */
   channelHealthCheckMinutes?: number;
+  /** Global watchdog for long-running agent turns. */
+  turnWatchdog?: GatewayTurnWatchdogConfig;
 };

@@ -77,10 +77,6 @@ describe("memory index", () => {
     sourceChangeStateDir = path.join(fixtureRoot, "state-source-change");
 
     await fs.mkdir(memoryDir, { recursive: true });
-    await fs.writeFile(
-      path.join(memoryDir, "2026-01-12.md"),
-      "# Log\nAlpha memory line.\nZebra memory line.",
-    );
   });
 
   afterAll(async () => {
@@ -94,8 +90,13 @@ describe("memory index", () => {
     vi.stubEnv("OPENCLAW_TEST_MEMORY_UNSAFE_REINDEX", "1");
     embedBatchCalls = 0;
 
-    // Keep the workspace stable to allow manager reuse across tests.
+    // Keep workspace location stable but reset memory test fixtures.
+    await fs.rm(memoryDir, { recursive: true, force: true });
     await fs.mkdir(memoryDir, { recursive: true });
+    await fs.writeFile(
+      path.join(memoryDir, "2026-01-12.md"),
+      "# Log\nAlpha memory line.\nZebra memory line.",
+    );
 
     // Clean additional paths that may have been created by earlier cases.
     await fs.rm(extraDir, { recursive: true, force: true });
@@ -124,6 +125,11 @@ describe("memory index", () => {
     cacheEnabled?: boolean;
     minScore?: number;
     hybrid?: { enabled: boolean; vectorWeight?: number; textWeight?: number };
+    pathRouting?: {
+      include?: string[];
+      exclude?: string[];
+      priority?: Array<{ pattern: string; weight?: number }>;
+    };
   }): TestCfg {
     return {
       agents: {
@@ -139,6 +145,7 @@ describe("memory index", () => {
             query: {
               minScore: params.minScore ?? 0,
               hybrid: params.hybrid ?? { enabled: false },
+              pathRouting: params.pathRouting,
             },
             cache: params.cacheEnabled ? { enabled: true } : undefined,
             extraPaths: params.extraPaths,
@@ -372,6 +379,65 @@ describe("memory index", () => {
         hybrid: { enabled: true, vectorWeight: 0.7, textWeight: 0.3 },
       }),
     );
+  });
+
+  it("prioritizes structured folders via query path routing", async () => {
+    await fs.mkdir(path.join(memoryDir, "preferences"), { recursive: true });
+    await fs.mkdir(path.join(memoryDir, "noise"), { recursive: true });
+    await fs.writeFile(path.join(memoryDir, "preferences", "profile.md"), "alpha preference");
+    await fs.writeFile(path.join(memoryDir, "noise", "chat.md"), "alpha chatter");
+
+    const cfg = createCfg({
+      storePath: path.join(workspaceDir, `index-routing-priority-${Date.now()}.sqlite`),
+      pathRouting: {
+        priority: [
+          { pattern: "memory/preferences/**", weight: 2 },
+          { pattern: "memory/noise/**", weight: 0.2 },
+        ],
+      },
+    });
+    const created = await getMemorySearchManager({ cfg, agentId: "main" });
+    expect(created.manager).not.toBeNull();
+    if (!created.manager) {
+      throw new Error("manager missing");
+    }
+    const manager = created.manager as MemoryIndexManager;
+    await manager.sync({ reason: "test" });
+
+    const results = await manager.search("alpha", { maxResults: 10 });
+    const pref = results.find((entry) => entry.path.includes("memory/preferences/profile.md"));
+    const noise = results.find((entry) => entry.path.includes("memory/noise/chat.md"));
+    expect(pref).toBeTruthy();
+    expect(noise).toBeTruthy();
+    expect(pref?.score ?? 0).toBeGreaterThan(noise?.score ?? 1);
+    await manager.close();
+  });
+
+  it("filters excluded folders via query path routing", async () => {
+    await fs.mkdir(path.join(memoryDir, "projects"), { recursive: true });
+    await fs.mkdir(path.join(memoryDir, "daily"), { recursive: true });
+    await fs.writeFile(path.join(memoryDir, "projects", "roadmap.md"), "alpha project");
+    await fs.writeFile(path.join(memoryDir, "daily", "2026-01-13.md"), "alpha daily log");
+
+    const cfg = createCfg({
+      storePath: path.join(workspaceDir, `index-routing-filter-${Date.now()}.sqlite`),
+      pathRouting: {
+        include: ["memory/projects/**", "memory/daily/**"],
+        exclude: ["memory/daily/**"],
+      },
+    });
+    const created = await getMemorySearchManager({ cfg, agentId: "main" });
+    expect(created.manager).not.toBeNull();
+    if (!created.manager) {
+      throw new Error("manager missing");
+    }
+    const manager = created.manager as MemoryIndexManager;
+    await manager.sync({ reason: "test" });
+
+    const results = await manager.search("alpha", { maxResults: 10 });
+    expect(results.some((entry) => entry.path.includes("memory/daily/2026-01-13.md"))).toBe(false);
+    expect(results.some((entry) => entry.path.includes("memory/projects/roadmap.md"))).toBe(true);
+    await manager.close();
   });
 
   it("reports vector availability after probe", async () => {

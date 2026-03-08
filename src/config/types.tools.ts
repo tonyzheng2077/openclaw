@@ -418,6 +418,21 @@ export type MemorySearchConfig = {
         halfLifeDays?: number;
       };
     };
+    /** Optional query-time path routing for include/exclude and score weighting. */
+    pathRouting?: {
+      /** Only keep matches whose path matches at least one include glob. */
+      include?: string[];
+      /** Drop matches whose path matches any exclude glob. */
+      exclude?: string[];
+      /**
+       * Apply multiplicative score weights for matching path globs.
+       * Later rules take precedence when multiple rules match.
+       */
+      priority?: Array<{
+        pattern: string;
+        weight?: number;
+      }>;
+    };
   };
   /** Index cache behavior. */
   cache?: {

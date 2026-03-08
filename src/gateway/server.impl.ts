@@ -48,6 +48,8 @@ import { getGlobalHookRunner, runGlobalGatewayStopSafely } from "../plugins/hook
 import { createEmptyPluginRegistry } from "../plugins/registry.js";
 import { createPluginRuntime } from "../plugins/runtime/index.js";
 import type { PluginServicesHandle } from "../plugins/services.js";
+import { setProactivityService } from "../proactivity/runtime.js";
+import { ProactivityService } from "../proactivity/service.js";
 import { getTotalQueueSize } from "../process/command-queue.js";
 import type { RuntimeEnv } from "../runtime.js";
 import type { CommandSecretAssignment } from "../secrets/command-config.js";
@@ -114,6 +116,7 @@ import {
   mergeGatewayTailscaleConfig,
 } from "./startup-auth.js";
 import { maybeSeedControlUiAllowedOriginsAtStartup } from "./startup-control-ui-origins.js";
+import { startGatewayTurnWatchdog } from "./turn-watchdog.js";
 
 export { __resetModelCatalogCacheForTest } from "./server-model-catalog.js";
 
@@ -751,8 +754,28 @@ export async function startGatewayServer(
         checkIntervalMs: (healthCheckMinutes ?? 5) * 60_000,
       });
 
+  let turnWatchdog = minimalTestGateway
+    ? {
+        stop: () => {},
+        updateConfig: () => {},
+      }
+    : startGatewayTurnWatchdog(cfgAtStart);
+
   if (!minimalTestGateway) {
     void cron.start().catch((err) => logCron.error(`failed to start: ${String(err)}`));
+  }
+
+  const proactivityService = minimalTestGateway
+    ? null
+    : new ProactivityService({
+        cfg: cfgAtStart,
+      });
+
+  if (proactivityService) {
+    setProactivityService(proactivityService);
+    void proactivityService.start().catch((err) => {
+      log.error(`proactivity failed to start: ${String(err)}`);
+    });
   }
 
   // Recover pending outbound deliveries from previous crash/restart.
@@ -945,6 +968,7 @@ export async function startGatewayServer(
           getState: () => ({
             hooksConfig,
             heartbeatRunner,
+            turnWatchdog,
             cronState,
             browserControl,
             channelHealthMonitor,
@@ -952,6 +976,7 @@ export async function startGatewayServer(
           setState: (nextState) => {
             hooksConfig = nextState.hooksConfig;
             heartbeatRunner = nextState.heartbeatRunner;
+            turnWatchdog = nextState.turnWatchdog;
             cronState = nextState.cronState;
             cron = cronState.cron;
             cronStorePath = cronState.storePath;
@@ -1012,6 +1037,7 @@ export async function startGatewayServer(
     cron,
     heartbeatRunner,
     updateCheckStop: stopGatewayUpdateCheck,
+    turnWatchdog,
     nodePresenceTimers,
     broadcast,
     tickInterval,
@@ -1048,6 +1074,8 @@ export async function startGatewayServer(
       authRateLimiter?.dispose();
       browserAuthRateLimiter.dispose();
       channelHealthMonitor?.stop();
+      proactivityService?.stop();
+      setProactivityService(null);
       clearSecretsRuntimeSnapshot();
       await close(opts);
     },

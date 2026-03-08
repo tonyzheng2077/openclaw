@@ -31,6 +31,8 @@ import type {
   MemorySource,
   MemorySyncProgressUpdate,
 } from "./types.js";
+import { applyPathRouting } from "./path-routing.js";
+
 const SNIPPET_MAX_CHARS = 700;
 const VECTOR_TABLE = "chunks_vec";
 const FTS_TABLE = "chunks_fts";
@@ -312,7 +314,8 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
       : [];
 
     if (!hybrid.enabled || !this.fts.enabled || !this.fts.available) {
-      return vectorResults.filter((entry) => entry.score >= minScore).slice(0, maxResults);
+      const routed = applyPathRouting(vectorResults, this.settings.query.pathRouting);
+      return routed.filter((entry) => entry.score >= minScore).slice(0, maxResults);
     }
 
     const merged = await this.mergeHybridResults({
@@ -323,7 +326,10 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
       mmr: hybrid.mmr,
       temporalDecay: hybrid.temporalDecay,
     });
-    const strict = merged.filter((entry) => entry.score >= minScore);
+
+    const routedMerged = applyPathRouting(merged, this.settings.query.pathRouting);
+
+    const strict = routedMerged.filter((entry) => entry.score >= minScore);
     if (strict.length > 0 || keywordResults.length === 0) {
       return strict.slice(0, maxResults);
     }
@@ -338,7 +344,7 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
         (entry) => `${entry.source}:${entry.path}:${entry.startLine}:${entry.endLine}`,
       ),
     );
-    return merged
+    return routedMerged
       .filter(
         (entry) =>
           keywordKeys.has(`${entry.source}:${entry.path}:${entry.startLine}:${entry.endLine}`) &&

@@ -22,6 +22,7 @@ import {
   logSessionStateChange,
 } from "../../logging/diagnostic.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
+import { getProactivityService } from "../../proactivity/runtime.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
 import { maybeApplyTtsToPayload, normalizeTtsAutoMode, resolveTtsConfig } from "../../tts/tts.js";
 import { INTERNAL_MESSAGE_CHANNEL, normalizeMessageChannel } from "../../utils/message-channel.js";
@@ -31,6 +32,7 @@ import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import { formatAbortReplyText, tryFastAbortFromMessage } from "./abort.js";
 import { shouldBypassAcpDispatchForCommand, tryDispatchAcpReply } from "./dispatch-acp.js";
 import { shouldSkipDuplicateInbound } from "./inbound-dedupe.js";
+import { applyMemoryReadMiddlewareToReplies } from "./memory-read-middleware.js";
 import type { ReplyDispatcher, ReplyDispatchKind } from "./reply-dispatcher.js";
 import { shouldSuppressReasoningPayload } from "./reply-payloads.js";
 import { isRoutableChannel, routeReply } from "./route-reply.js";
@@ -175,6 +177,21 @@ export async function dispatchReplyFromConfig(params: {
   const sessionTtsAuto = normalizeTtsAutoMode(sessionStoreEntry.entry?.ttsAuto);
   const hookRunner = getGlobalHookRunner();
 
+  const proactivity = getProactivityService();
+  if (proactivity) {
+    const inboundContent =
+      typeof ctx.BodyForCommands === "string"
+        ? ctx.BodyForCommands
+        : typeof ctx.RawBody === "string"
+          ? ctx.RawBody
+          : typeof ctx.Body === "string"
+            ? ctx.Body
+            : "";
+    void proactivity
+      .observeInboundUserMessage(inboundContent, `${channel}:${chatId ?? "unknown"}`)
+      .catch(() => undefined);
+  }
+
   // Extract message context for hooks (plugin and internal)
   const timestamp =
     typeof ctx.Timestamp === "number" && Number.isFinite(ctx.Timestamp) ? ctx.Timestamp : undefined;
@@ -304,6 +321,11 @@ export async function dispatchReplyFromConfig(params: {
         }
       } else {
         queuedFinal = dispatcher.sendFinalReply(payload);
+      }
+      if (proactivity && payload.text) {
+        payload.text = await proactivity
+          .enforceAssistantOutboundReply(payload.text, `${channel}:${chatId ?? "unknown"}`)
+          .catch(() => payload.text);
       }
       const counts = dispatcher.getQueuedCounts();
       counts.final += routedFinalCount;
@@ -474,10 +496,15 @@ export async function dispatchReplyFromConfig(params: {
     }
 
     const replies = replyResult ? (Array.isArray(replyResult) ? replyResult : [replyResult]) : [];
+    const gatedReplies = await applyMemoryReadMiddlewareToReplies({
+      cfg,
+      ctx,
+      replies,
+    });
 
     let queuedFinal = false;
     let routedFinalCount = 0;
-    for (const reply of replies) {
+    for (const reply of gatedReplies) {
       // Suppress reasoning payloads from channel delivery — channels using this
       // generic dispatch path do not have a dedicated reasoning lane.
       if (shouldSuppressReasoningPayload(reply)) {
@@ -491,6 +518,11 @@ export async function dispatchReplyFromConfig(params: {
         inboundAudio,
         ttsAuto: sessionTtsAuto,
       });
+      if (proactivity && ttsReply.text) {
+        ttsReply.text = await proactivity
+          .enforceAssistantOutboundReply(ttsReply.text, `${channel}:${chatId ?? "unknown"}`)
+          .catch(() => ttsReply.text);
+      }
       if (shouldRouteToOriginating && originatingChannel && originatingTo) {
         // Route final reply to originating channel.
         const result = await routeReply({
