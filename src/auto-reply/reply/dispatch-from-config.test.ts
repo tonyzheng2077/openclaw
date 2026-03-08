@@ -23,6 +23,9 @@ const hookMocks = vi.hoisted(() => ({
     runMessageReceived: vi.fn(async () => {}),
   },
 }));
+const memoryReadMocks = vi.hoisted(() => ({
+  apply: vi.fn(async ({ replies }: { replies: ReplyPayload[] }) => replies),
+}));
 
 vi.mock("./route-reply.js", () => ({
   isRoutableChannel: (channel: string | undefined) =>
@@ -54,6 +57,10 @@ vi.mock("../../plugins/hook-runner-global.js", () => ({
   getGlobalHookRunner: () => hookMocks.runner,
 }));
 
+vi.mock("./memory-read-middleware.js", () => ({
+  applyMemoryReadMiddlewareToReplies: memoryReadMocks.apply,
+}));
+
 const { dispatchReplyFromConfig } = await import("./dispatch-from-config.js");
 const { resetInboundDedupe } = await import("./inbound-dedupe.js");
 
@@ -77,6 +84,10 @@ describe("dispatchReplyFromConfig", () => {
     hookMocks.runner.hasHooks.mockReset();
     hookMocks.runner.hasHooks.mockReturnValue(false);
     hookMocks.runner.runMessageReceived.mockReset();
+    memoryReadMocks.apply.mockReset();
+    memoryReadMocks.apply.mockImplementation(
+      async ({ replies }: { replies: ReplyPayload[] }) => replies,
+    );
   });
   it("does not route when Provider matches OriginatingChannel (even if Surface is missing)", async () => {
     mocks.tryFastAbortFromMessage.mockResolvedValue({
@@ -163,6 +174,42 @@ describe("dispatchReplyFromConfig", () => {
 
     await dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyResolver });
     expect(dispatcher.sendFinalReply).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs memory read middleware at final reply boundary", async () => {
+    mocks.tryFastAbortFromMessage.mockResolvedValue({ handled: false, aborted: false });
+    const cfg = { memory: { readMiddleware: { enabled: true } } } as OpenClawConfig;
+    const dispatcher = createDispatcher();
+    const ctx = buildTestCtx({ Provider: "telegram", BodyForCommands: "what do you remember" });
+
+    const replyResolver = async () => ({ text: "I remember your rule" }) satisfies ReplyPayload;
+    await dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyResolver });
+
+    expect(memoryReadMocks.apply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cfg,
+        ctx,
+        replies: [{ text: "I remember your rule" }],
+      }),
+    );
+  });
+
+  it("uses transformed fallback when middleware denies confident memory claim", async () => {
+    mocks.tryFastAbortFromMessage.mockResolvedValue({ handled: false, aborted: false });
+    memoryReadMocks.apply.mockResolvedValue([
+      { text: "I couldn't verify that from memory right now." },
+    ]);
+    const cfg = { memory: { readMiddleware: { enabled: true } } } as OpenClawConfig;
+    const dispatcher = createDispatcher();
+    const ctx = buildTestCtx({ Provider: "telegram" });
+
+    const replyResolver = async () =>
+      ({ text: "I remember your default policy" }) satisfies ReplyPayload;
+    await dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyResolver });
+
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "I couldn't verify that from memory right now." }),
+    );
   });
 
   it("does not provide onToolResult in group sessions", async () => {

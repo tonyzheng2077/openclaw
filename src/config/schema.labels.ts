@@ -157,6 +157,14 @@ export const FIELD_LABELS: Record<string, string> = {
   "agents.defaults.memorySearch.query.hybrid.textWeight": "Memory Search Text Weight",
   "agents.defaults.memorySearch.query.hybrid.candidateMultiplier":
     "Memory Search Hybrid Candidate Multiplier",
+  "agents.defaults.memorySearch.query.pathRouting": "Memory Search Path Routing",
+  "agents.defaults.memorySearch.query.pathRouting.include": "Memory Search Path Include",
+  "agents.defaults.memorySearch.query.pathRouting.exclude": "Memory Search Path Exclude",
+  "agents.defaults.memorySearch.query.pathRouting.priority": "Memory Search Path Priority",
+  "agents.defaults.memorySearch.query.pathRouting.priority.pattern":
+    "Memory Search Path Priority Pattern",
+  "agents.defaults.memorySearch.query.pathRouting.priority.weight":
+    "Memory Search Path Priority Weight",
   "agents.defaults.memorySearch.cache.enabled": "Memory Search Embedding Cache",
   "agents.defaults.memorySearch.cache.maxEntries": "Memory Search Embedding Cache Max Entries",
   memory: "Memory",

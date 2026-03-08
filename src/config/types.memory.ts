@@ -8,6 +8,26 @@ export type MemoryConfig = {
   backend?: MemoryBackend;
   citations?: MemoryCitationsMode;
   qmd?: MemoryQmdConfig;
+  readMiddleware?: MemoryReadMiddlewareConfig;
+};
+
+export type MemoryReadMiddlewareConfig = {
+  /** Feature flag for Batch 2.3 runtime read-gate integration. */
+  enabled?: boolean;
+  /** hard_gate blocks/transforms replies; shadow only records metadata. */
+  mode?: "hard_gate" | "shadow";
+  /** Command/script to invoke for pre-answer read interception. */
+  command?: string;
+  /** Extra static args prepended before runtime args. */
+  commandArgs?: string[];
+  /** Interceptor timeout in milliseconds. */
+  timeoutMs?: number;
+  /** Deny reply when interceptor invocation/parse fails. */
+  denyOnError?: boolean;
+  /** Require source_receipt_path for memory-relevant replies. */
+  requireSourceReceipt?: boolean;
+  /** Transform denied confident claims into safe fallback text. */
+  transformDeniedClaims?: boolean;
 };
 
 export type MemoryQmdConfig = {

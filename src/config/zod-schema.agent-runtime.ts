@@ -438,6 +438,23 @@ export const MemorySearchSchema = z
           })
           .strict()
           .optional(),
+        pathRouting: z
+          .object({
+            include: z.array(z.string()).optional(),
+            exclude: z.array(z.string()).optional(),
+            priority: z
+              .array(
+                z
+                  .object({
+                    pattern: z.string(),
+                    weight: z.number().nonnegative().optional(),
+                  })
+                  .strict(),
+              )
+              .optional(),
+          })
+          .strict()
+          .optional(),
       })
       .strict()
       .optional(),

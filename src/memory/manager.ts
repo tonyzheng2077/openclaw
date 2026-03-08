@@ -28,6 +28,7 @@ import { isMemoryPath, normalizeExtraMemoryPaths } from "./internal.js";
 import { memoryManagerEmbeddingOps } from "./manager-embedding-ops.js";
 import { searchKeyword, searchVector } from "./manager-search.js";
 import { memoryManagerSyncOps } from "./manager-sync-ops.js";
+import { applyPathRouting } from "./path-routing.js";
 const SNIPPET_MAX_CHARS = 700;
 const VECTOR_TABLE = "chunks_vec";
 const FTS_TABLE = "chunks_fts";
@@ -236,7 +237,8 @@ export class MemoryIndexManager implements MemorySearchManager {
       : [];
 
     if (!hybrid.enabled) {
-      return vectorResults.filter((entry) => entry.score >= minScore).slice(0, maxResults);
+      const routed = applyPathRouting(vectorResults, this.settings.query.pathRouting);
+      return routed.filter((entry) => entry.score >= minScore).slice(0, maxResults);
     }
 
     const merged = this.mergeHybridResults({
@@ -245,8 +247,9 @@ export class MemoryIndexManager implements MemorySearchManager {
       vectorWeight: hybrid.vectorWeight,
       textWeight: hybrid.textWeight,
     });
+    const routed = applyPathRouting(merged, this.settings.query.pathRouting);
 
-    return merged.filter((entry) => entry.score >= minScore).slice(0, maxResults);
+    return routed.filter((entry) => entry.score >= minScore).slice(0, maxResults);
   }
 
   private async searchVector(

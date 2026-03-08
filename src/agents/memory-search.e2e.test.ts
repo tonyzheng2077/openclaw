@@ -255,4 +255,47 @@ describe("memory search config", () => {
     const resolved = resolveMemorySearchConfig(cfg, "main");
     expect(resolved?.sources).toContain("sessions");
   });
+
+  it("resolves query path routing config", () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          memorySearch: {
+            query: {
+              pathRouting: {
+                include: ["memory/preferences/**"],
+                priority: [{ pattern: "memory/projects/**", weight: 1.5 }],
+              },
+            },
+          },
+        },
+        list: [
+          {
+            id: "main",
+            default: true,
+            memorySearch: {
+              query: {
+                pathRouting: {
+                  exclude: ["memory/noise/**"],
+                  priority: [
+                    { pattern: "memory/preferences/**", weight: 2 },
+                    { pattern: "  ", weight: 3 },
+                  ],
+                },
+              },
+            },
+          },
+        ],
+      },
+    };
+    const resolved = resolveMemorySearchConfig(cfg, "main");
+    expect(resolved?.query.pathRouting).toEqual({
+      include: ["memory/preferences/**"],
+      exclude: ["memory/noise/**"],
+      priority: [
+        { pattern: "memory/projects/**", weight: 1.5 },
+        { pattern: "memory/preferences/**", weight: 2 },
+      ],
+    });
+  });
 });
